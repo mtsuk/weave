@@ -49,21 +49,6 @@ HTTP_PORT=6784
 DNS_HTTP_PORT=6785
 DOCKER_BRIDGE=${DOCKER_BRIDGE:-docker0}
 
-# check ip utility supports type of bridge
-# to avoid errors:
-# either "dev" is duplicate, or "master" is a garbage
-# either "local" is duplicate, or "ethwe" is a garbage
-(ip link add name dummy type bridge >/dev/null 2>&1) && {
-    IP_OPT=dev
-    ip link del $IP_OPT dummy
-} || (check_command_and_run brctl show >/dev/null)
-
-# check ip utility support netns
-(ip netns >/dev/null 2>&1) || {
-    echo "Unsupported version of `ip -V`." >&2
-    exit 1
-}
-
 COMMAND=$1
 
 shift 1
@@ -80,6 +65,22 @@ check_command_and_run_anything() {
 
 check_command_and_run() {
     check_command_and_run_anything $1 "$@"
+}
+
+check_iproute_and_route_utils() {
+    # check ip utility supports type of bridge
+    # to avoid errors:
+    # either "dev" is duplicate, or "master" is a garbage
+    # either "local" is duplicate, or "ethwe" is a garbage
+    (ip link add name dummy type bridge >/dev/null 2>&1) && {
+        IP_OPT=dev
+        ip link del $IP_OPT dummy
+    } || (check_command_and_run brctl show >/dev/null)
+    # check ip utility support netns
+    (ip netns >/dev/null 2>&1) || {
+        echo "Unsupported version of `ip -V`." >&2
+        exit 1
+    }
 }
 
 is_cidr() {
@@ -128,6 +129,7 @@ delete_iptables_rule() {
 }
 
 create_bridge() {
+    check_iproute_and_route_utils
     [ ! -d /sys/class/net/$BRIDGE ] && {
         if [ $IP_OPT ]; then
             ip link add name $BRIDGE type bridge
