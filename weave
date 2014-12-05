@@ -49,6 +49,21 @@ HTTP_PORT=6784
 DNS_HTTP_PORT=6785
 DOCKER_BRIDGE=${DOCKER_BRIDGE:-docker0}
 
+# check ip utility supports type of bridge
+# to avoid errors:
+# either "dev" is duplicate, or "master" is a garbage
+# either "local" is duplicate, or "ethwe" is a garbage
+(ip link add name dummy type bridge >/dev/null 2>&1) && {
+    IP_OPT=dev
+    ip link del $IP_OPT dummy
+} || (check_command_and_run brctl show >/dev/null)
+
+# check ip utility support netns
+(ip netns >/dev/null 2>&1) || {
+    echo "Unsupported version of `ip -V`." >&2
+    exit 1
+}
+
 COMMAND=$1
 
 shift 1
@@ -114,15 +129,24 @@ delete_iptables_rule() {
 
 create_bridge() {
     [ ! -d /sys/class/net/$BRIDGE ] && {
-        ip link add name $BRIDGE type bridge
-        ip link set dev $BRIDGE address 7a:$(od -txC -An -N5 /dev/urandom | tr \  : | tail -c+2)
+        if [ $IP_OPT ]; then
+            ip link add name $BRIDGE type bridge
+        else 
+            brctl addbr $BRIDGE
+        fi
+        ip link set $IP_OPT $BRIDGE address 7a:$(od -txC -An -N5 /dev/urandom | tr \  : | tail -c+2)
         # Attempting to set the bridge MTU to a high value directly
         # fails. Bridges take the lowest MTU of their interfaces. So
         # instead we create a temporary interface with the desired
         # MTU, attach that to the bridge, and then remove it again.
         ip link add name v${CONTAINER_IFNAME}du mtu $MTU type dummy
-        ip link set dev v${CONTAINER_IFNAME}du master $BRIDGE
-        ip link del dev v${CONTAINER_IFNAME}du
+        if [ $IP_OPT ]; then
+            ip link set $IP_OPT v${CONTAINER_IFNAME}du master $BRIDGE
+        else
+            brctl addif $BRIDGE v${CONTAINER_IFNAME}du
+            brctl delif $BRIDGE v${CONTAINER_IFNAME}du
+        fi
+        ip link del $IP_OPT v${CONTAINER_IFNAME}du
         # disable offloading
         check_command_and_run ethtool -K $BRIDGE tx off >/dev/null
         # Work around the situation where there are no rules allowing traffic
@@ -132,12 +156,15 @@ create_bridge() {
         run_iptables -t nat -N WEAVE >/dev/null 2>&1 || true
         add_iptables_rule nat POSTROUTING -j WEAVE
     }
-    ip link set dev $BRIDGE up
+    ip link set $IP_OPT $BRIDGE up
 }
 
 destroy_bridge() {
-    if [ -d /sys/class/net/$BRIDGE ] ; then
-        ip link del dev $BRIDGE
+    if [ -d /sys/class/net/$BRIDGE -a x$IP_OPT = x ] ; then
+        ip link set $BRIDGE down
+        brctl delbr $BRIDGE
+    elif [ -d /sys/class/net/$BRIDGE ] ; then
+        ip link del $IP_OPT $BRIDGE
     fi
     run_iptables -t filter -D FORWARD -i $BRIDGE -o $BRIDGE -j ACCEPT 2>/dev/null || true
     run_iptables -t nat -F WEAVE >/dev/null 2>&1 || true
@@ -203,8 +230,13 @@ connect_container_to_bridge() {
         return 1
     fi
 
-    if check_command_and_run ethtool -K $GUEST_IFNAME tx off >/dev/null &&
-        ip link set $LOCAL_IFNAME master $BRIDGE &&
+    if check_command_and_run ethtool -K $GUEST_IFNAME tx off >/dev/null && {
+        if [ $IP_OPT ]; then
+            ip link set $LOCAL_IFNAME master $BRIDGE
+        else
+            brctl addif $BRIDGE $LOCAL_IFNAME
+        fi
+    } &&
         ip link set $LOCAL_IFNAME up &&
         ip link set $GUEST_IFNAME netns $NETNS ; then
         ip netns exec $NETNS ip link set $GUEST_IFNAME name $CONTAINER_IFNAME
@@ -526,9 +558,9 @@ case "$COMMAND" in
         [ $# -eq 1 ] || usage
         validate_cidr $1
         create_bridge
-        if ! ip addr show dev $BRIDGE | grep -qF $1
+        if ! ip addr show $IP_OPT $BRIDGE | grep -qF $1
         then
-            ip addr add dev $BRIDGE $1
+            ip addr add $IP_OPT $BRIDGE $1
             add_iptables_rule nat WEAVE -o $BRIDGE ! -s $1 -j MASQUERADE
             add_iptables_rule nat WEAVE -s $1 ! -o $BRIDGE -j MASQUERADE
         fi
@@ -537,9 +569,9 @@ case "$COMMAND" in
         [ $# -eq 1 ] || usage
         validate_cidr $1
         create_bridge
-        if ip addr show dev $BRIDGE | grep -qF $1
+        if ip addr show $IP_OPT $BRIDGE | grep -qF $1
         then
-            ip addr del dev $BRIDGE $1
+            ip addr del $IP_OPT $BRIDGE $1
             delete_iptables_rule nat WEAVE -o $BRIDGE ! -s $1 -j MASQUERADE
             delete_iptables_rule nat WEAVE -s $1 ! -o $BRIDGE -j MASQUERADE
         fi
