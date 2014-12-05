@@ -67,7 +67,7 @@ check_command_and_run() {
     check_command_and_run_anything $1 "$@"
 }
 
-check_iproute_and_route_utils() {
+check_iproute_and_bridge_utils() {
     # check ip utility supports type of bridge
     # to avoid errors:
     # either "dev" is duplicate, or "master" is a garbage
@@ -129,7 +129,7 @@ delete_iptables_rule() {
 }
 
 create_bridge() {
-    check_iproute_and_route_utils
+    check_iproute_and_bridge_utils
     [ ! -d /sys/class/net/$BRIDGE ] && {
         if [ $IP_OPT ]; then
             ip link add name $BRIDGE type bridge
